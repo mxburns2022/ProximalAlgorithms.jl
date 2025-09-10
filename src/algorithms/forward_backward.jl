@@ -71,14 +71,14 @@ function Base.iterate(iter::ForwardBackwardIteration)
     y = x - gamma .* grad_f_x
     z, g_z = prox(iter.g, y, gamma)
     state = ForwardBackwardState(
-        x = x,
-        f_x = f_x,
-        grad_f_x = grad_f_x,
-        gamma = gamma,
-        y = y,
-        z = z,
-        g_z = g_z,
-        res = x - z,
+        x=x,
+        f_x=f_x,
+        grad_f_x=grad_f_x,
+        gamma=gamma,
+        y=y,
+        z=z,
+        g_z=g_z,
+        res=x - z,
     )
     return state, state
 end
@@ -103,8 +103,8 @@ function Base.iterate(
             state.res,
             state.z,
             state.grad_f_z,
-            minimum_gamma = iter.minimum_gamma,
-            reduce_gamma = iter.reduce_gamma,
+            minimum_gamma=iter.minimum_gamma,
+            reduce_gamma=iter.reduce_gamma,
         )
         state.x, state.z = state.z, state.x
         state.grad_f_x, state.grad_f_z = state.grad_f_z, state.grad_f_x
@@ -159,13 +159,13 @@ See also: [`ForwardBackwardIteration`](@ref), [`IterativeAlgorithm`](@ref).
 2. De Marchi, Themelis, "An interior proximal gradient method for nonconvex optimization," arXiv:2208.00799v2 (2024).
 """
 ForwardBackward(;
-    maxit = 10_000,
-    tol = 1e-8,
-    stop = (iter, state) -> default_stopping_criterion(tol, iter, state),
-    solution = default_solution,
-    verbose = false,
-    freq = 100,
-    display = default_display,
+    maxit=10_000,
+    tol=1e-8,
+    stop=(iter, state) -> default_stopping_criterion(tol, iter, state),
+    solution=default_solution,
+    verbose=false,
+    freq=100,
+    display=default_display,
     kwargs...,
 ) = IterativeAlgorithm(
     ForwardBackwardIteration;
