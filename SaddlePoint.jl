@@ -3,48 +3,52 @@ using LinearAlgebra
 using JuMP
 using ProximalAlgorithms
 using ProximalOperators
-# import ProximalAlgorithm
-
-# include("ProxBundle.jl")
-abstract type SaddlePointProblem end
+import SparseArrays as sp
 
 
 
-# Solve \min_{x ∈ Δₙ}\max_{y ∈ Δₘ}<Ax, y> + ||Bx||∞ -||-Cy||∞
-mutable struct BilinearGame <: SaddlePointProblem
-    A::Matrix{Float64}
+struct BilinearSPP{TR,TA}
+    A::TA
     N::Int
     M::Int
-    λy::Float64
-    λx::Float64
+    λy::TR
+    λx::TR
 end
 
 
 
 
-function subgradient!(game::BilinearGame, g::AbstractVector{T}, x::AbstractVector{T}, y::AbstractVector{T}) where T<:Real
+function subgradient!(game::BilinearSPP, g::AbstractVector{T}, x::AbstractVector{T}, y::AbstractVector{T}) where T<:Real
     g .= game.A' * y
-    g[argmax(x)] += game.λx
+    maxargs = findall(x .== maximum(x))
+    g[maxargs] .+= game.λx / size(maxargs, 1)
 end
 
-function supergradient!(game::BilinearGame, g::AbstractVector{T}, x::AbstractVector{T}, y::AbstractVector{T}) where T<:Real
+function supergradient!(game::BilinearSPP, g::AbstractVector{T}, x::AbstractVector{T}, y::AbstractVector{T}) where T<:Real
     g .= game.A * x
-    g[argmax(y)] -= game.λy
+    maxargs = findall(y .== maximum(y))
+    g[maxargs] .-= game.λy / size(maxargs, 1)
 end
 
-function eval(game::BilinearGame, x::AbstractVector{T}, y::AbstractVector{T}) where T<:Real
-    return y' * game.A * x + game.λx * maximum(x) + game.λy * minimum(y)
+function eval(game::BilinearSPP, x::AbstractVector{T}, y::AbstractVector{T}) where T<:Real
+    return y' * game.A * x + game.λx * maximum(x) - game.λy * maximum(y)
 end
 
 
-function generate_random_zero_sum(n::Int, m::Int, density::Float64, range::Tuple; seed::Int=0)
+function generate_random_zero_sum(n::Int, m::Int, density::Float64, stddev::Float64; seed::Int=0, sparse::Bool=true)
     generator = Xoshiro(seed)
-    A = (((rand(generator, m, n) .* (range[2] - range[1])) .+ range[1]) .* convert.(Float64, rand(generator, m, n) .<= density))
-    return BilinearGame(A, n, m, 1.0, 1.0)
+    if !sparse
+        A = ((randn(generator, m, n) .* stddev) .* convert.(Float64, rand(generator, m, n) .<= density))
+    else
+        rfn(gen, k) = randn(gen, k) .* stddev
+        A = sp.sprand(generator, m, n, density, rfn)
+    end
+
+    return BilinearSPP(A, n, m, 1.0, 1.0)
 end
 
 
-function prox_mapping_y!(::BilinearGame, z::AbstractVector{T}) where T<:Real
+function prox_mapping_y!(::BilinearSPP, z::AbstractVector{T}) where T<:Real
     yt = sort(z)
     n = size(z, 1)
     for i in 1:n-1
@@ -57,10 +61,10 @@ function prox_mapping_y!(::BilinearGame, z::AbstractVector{T}) where T<:Real
     t = (sum(z) - 1) / (n)
     z .= max.(z .- t, 0)
 end
-prox_mapping_x!(game::BilinearGame, x) = prox_mapping_y!(game, x)
+prox_mapping_x!(game::BilinearSPP, x) = prox_mapping_y!(game, x)
 
 
-function primalv(game::BilinearGame, x::AbstractVector{T}; solution::Bool=false) where T<:Real
+function primalv(game::BilinearSPP, x::AbstractVector{T}; solution::Bool=false) where T<:Real
     Ax = -game.A * x
     indices = sortperm(Ax)
     sorted_Ax = Ax[indices]
@@ -84,7 +88,7 @@ function primalv(game::BilinearGame, x::AbstractVector{T}; solution::Bool=false)
     optimizer[indices[1:index]] .= 1 / index
     return -value + maximum(x) * game.λx, optimizer
 end
-function dualv(game::BilinearGame, y::AbstractVector{T}; solution::Bool=false) where T<:Real
+function dualv(game::BilinearSPP, y::AbstractVector{T}; solution::Bool=false) where T<:Real
     Ay = game.A' * y
     indices = sortperm(Ay)
     sorted_Ay = Ay[indices]
@@ -109,40 +113,39 @@ function dualv(game::BilinearGame, y::AbstractVector{T}; solution::Bool=false) w
     optimizer[indices[1:index]] .= 1 / index
     return value - maximum(y) * game.λy, optimizer
 end
-function subgradient_method(problem::BilinearGame, R::Float64, target_accuracy::Float64)
+function subgradient_method(problem::BilinearSPP, target_accuracy::Float64; log_frequency::Int=1000)
     gx = zeros(problem.N)
     gy = zeros(problem.M)
     x = ones(problem.N) / problem.N
     y = ones(problem.M) / problem.M
-    anorm = norm(problem.A)
+    M = norm(problem.A, Inf) + 1
     h = IndSimplex()
-    niter = convert(Int, ceil(128 * anorm^2 * 1 / (target_accuracy^2)))
-    hₖ = target_accuracy / (32 * anorm^2)
+    niter = convert(Int, ceil(128 * M^2 * 1 / (target_accuracy^2)))
+    hₖ = target_accuracy / (32 * M^2)
     x̄ = zeros(problem.N)
     ȳ = zeros(problem.M)
+    starttime = time_ns()
+    # data = []
+    println("elapsed_time(s),inner_steps,outer_steps,pd_gap")
+
     for k in 1:niter
-        hₖ = R / (sqrt(k))
-        if k % 10000 == 0
-            println(k, " ", primalv(problem, x̄) - dualv(problem, ȳ))
+        axpby!(1 / k, x, (k - 1) / k, x̄)
+        axpby!(1 / k, y, (k - 1) / k, ȳ)
+        if (k - 1) % log_frequency == 0
+            println(round((time_ns() - starttime) / 1e9, sigdigits=6), ",", 2(k - 1), ",", k, ",", primalv(game, x̄) - dualv(game, ȳ))
+            flush(stdout)
         end
-        if k % 10000 == 0 && primalv(problem, x̄) - dualv(problem, ȳ) <= target_accuracy
+        if k % 500 == 0 && primalv(problem, x̄) - dualv(problem, ȳ) <= target_accuracy
             return x, y
-            # println(niter, " ", eval(problem, x, y), " ", primalv(problem, x) - dualv(problem, y), " ", maximum(problem.A * x) - minimum(problem.A' * y))
         end
-        # fill!(gx, 0.0)
-        # fill!(gy, 0.0)
+
         subgradient!(problem, gx, x, y)
         supergradient!(problem, gy, x, y)
-        normval = sqrt(norm(gx)^2 + norm(gy)^2)
-        axpby!(-hₖ ./ normval, gx, 1.0, x)
-        axpby!(hₖ ./ normval, gy, 1.0, y)
+        axpby!(-hₖ, gx, 1.0, x)
+        axpby!(hₖ, gy, 1.0, y)
 
         prox!(x, h, x)
         prox!(y, h, y)
-        axpby!(1 / k, x, (k - 1) / k, x̄)
-        axpby!(1 / k, y, (k - 1) / k, ȳ)
-        # println(y, " || ", sum(y))
-        # Want 0 \in subdifferential of 
     end
     return x, y
 end
